@@ -1,0 +1,55 @@
+# TikTok Research System Configuration
+
+# ScraperAPI設定
+scraper:
+  api_key: "YOUR_SCRAPERAPI_KEY_HERE"  # ScraperAPIのAPIキーを設定してください
+  base_url: "https://api.scraperapi.com"
+  timeout: 60
+  max_retries: 3
+  rate_limit_delay: 2.0
+
+# TikTok設定
+tiktok:
+  country_code: "JP"  # 日本
+  explore_url: "https://www.tiktok.com/explore"
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+
+# フィルタリング設定
+filter:
+  min_views: 500000  # 最小再生数（50万）
+  time_range_hours: 24  # 時間範囲（24時間）
+  exclude_duplicates: true
+  min_engagement_score: 0.01
+
+# データベース設定
+database:
+  path: "data/tiktok_videos.db"
+  backup_interval_hours: 24
+  cleanup_days: 30
+
+# ログ設定
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file_path: "logs/tiktok_research.log"
+  max_file_size_mb: 10
+  backup_count: 5
+
+# 監視設定
+monitoring:
+  enabled: true
+  interval_seconds: 60
+  alert_thresholds:
+    cpu_percent: 80.0
+    memory_percent: 85.0
+    disk_percent: 90.0
+    error_rate: 0.1
+    response_time: 30.0
+
+# 収集設定
+collection:
+  default_target_count: 100
+  max_attempts: 5
+  retry_delay_seconds: 30
+  concurrent_requests: 1
+
