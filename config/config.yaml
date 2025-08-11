@@ -2,7 +2,7 @@
 
 # ScraperAPI設定
 scraper:
-  api_key: "YOUR_SCRAPERAPI_KEY_HERE"  # ScraperAPIのAPIキーを設定してください
+  api_key: "efa27526aceb63d299b7350708703a59"  # ScraperAPIのAPIキーを設定してください
   base_url: "https://api.scraperapi.com"
   timeout: 60
   max_retries: 3

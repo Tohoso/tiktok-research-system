@@ -9,7 +9,7 @@ from datetime import datetime
 from ..utils.logger import get_logger, PerformanceLogger
 from ..utils.config import config
 from ..utils.helpers import retry_on_exception
-from ..parser.tiktok_parser import TikTokParser
+# from ..parser.tiktok_parser import TikTokParser  # 循環インポート回避
 from ..parser.video_data import VideoData, VideoCollection
 from .scraperapi_client import ScraperAPIClient
 from .exceptions import ScraperError, APIError, RateLimitError
@@ -38,17 +38,26 @@ class TikTokScraper:
                 base_url=scraper_config.get('base_url'),
                 timeout=scraper_config.get('timeout', 60),
                 max_retries=scraper_config.get('max_retries', 3),
-                rate_limit_delay=scraper_config.get('rate_limit_delay', 2.0)
             )
         
-        # パーサーの初期化
-        self.parser = TikTokParser()
+        # パーサーの遅延初期化（循環インポート回避）
+        self._parser = None
         
-        # 設定の読み込み
-        self.tiktok_config = config.get_tiktok_config()
-        self.filter_config = config.get_filter_config()
-        
-        self.logger.info("TikTokスクレイパーを初期化しました")
+        # 統計情報
+        self.stats = {
+            'requests_made': 0,
+            'videos_found': 0,
+            'errors': 0,
+            'start_time': datetime.now()
+        }
+    
+    @property
+    def parser(self):
+        """パーサーの遅延初期化"""
+        if self._parser is None:
+            from ..parser.tiktok_parser import TikTokParser
+            self._parser = TikTokParser()
+        return self._parser
     
     @retry_on_exception(max_retries=3, delay=2.0)
     def scrape_explore_page(

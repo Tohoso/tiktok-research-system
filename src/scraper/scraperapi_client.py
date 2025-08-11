@@ -3,12 +3,16 @@ ScraperAPI client for TikTok Research System
 """
 
 import time
+import random
 import requests
 from typing import Dict, Any, Optional, Union
 from urllib.parse import urlencode
 
 from ..utils.logger import get_logger
 from ..utils.helpers import retry_on_exception, validate_url
+from ..utils.user_agents import UserAgentManager
+from ..utils.proxy_manager import ProxyManager
+from ..utils.request_throttle import RequestThrottle, RequestPattern
 from .exceptions import (
     APIError,
     RateLimitError,
@@ -27,7 +31,10 @@ class ScraperAPIClient:
         base_url: str = "http://api.scraperapi.com",
         timeout: int = 60,
         max_retries: int = 3,
-        rate_limit_delay: float = 2.0
+        rate_limit_delay: float = 2.0,
+        enable_proxy_rotation: bool = True,
+        enable_request_throttling: bool = True,
+        device_type: str = "desktop"
     ):
         """
         ScraperAPI クライアントを初期化
@@ -38,6 +45,9 @@ class ScraperAPIClient:
             timeout: タイムアウト（秒）
             max_retries: 最大リトライ回数
             rate_limit_delay: レート制限時の待機時間（秒）
+            enable_proxy_rotation: プロキシローテーションを有効にするか
+            enable_request_throttling: リクエスト制御を有効にするか
+            device_type: デバイスタイプ（"desktop", "mobile", "tiktok"）
         """
         if not api_key or api_key == "your_scraperapi_key_here":
             raise ConfigurationError("有効なScraperAPI キーが設定されていません")
@@ -47,16 +57,58 @@ class ScraperAPIClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self.rate_limit_delay = rate_limit_delay
+        self.device_type = device_type
         
         self.logger = get_logger(self.__class__.__name__)
         self.session = requests.Session()
         
+        # 新機能の初期化
+        self.user_agent_manager = UserAgentManager()
+        self.proxy_manager = ProxyManager(enable_rotation=enable_proxy_rotation)
+        
+        # リクエスト制御の設定
+        if enable_request_throttling:
+            throttle_pattern = RequestPattern(
+                min_delay=3.0,  # TikTok用に少し長めに設定
+                max_delay=10.0,
+                burst_requests=2,  # バースト数を減らす
+                burst_cooldown=45.0,  # クールダウンを長めに
+                hourly_limit=50,  # 時間制限を厳しく
+                daily_limit=500   # 日制限を厳しく
+            )
+            self.request_throttle = RequestThrottle(throttle_pattern)
+        else:
+            self.request_throttle = None
+        
+        # 現在のUser-Agentを設定
+        self.current_user_agent = self.user_agent_manager.get_random_agent(device_type)
+        
         # セッションのデフォルト設定
-        self.session.headers.update({
-            'User-Agent': 'TikTok-Research-System/1.0'
-        })
+        self._update_session_headers()
         
         self.logger.info("ScraperAPI クライアントを初期化しました")
+        self.logger.info(f"プロキシローテーション: {'有効' if enable_proxy_rotation else '無効'}")
+        self.logger.info(f"リクエスト制御: {'有効' if enable_request_throttling else '無効'}")
+        self.logger.info(f"デバイスタイプ: {device_type}")
+    
+    def _update_session_headers(self):
+        """セッションヘッダーを更新"""
+        headers = self.user_agent_manager.get_browser_headers(self.current_user_agent)
+        self.session.headers.update(headers)
+        
+        # TikTok特有のヘッダーを追加
+        if self.device_type == "tiktok":
+            self.session.headers.update({
+                'Referer': 'https://www.tiktok.com/',
+                'Origin': 'https://www.tiktok.com',
+                'X-Requested-With': 'XMLHttpRequest',
+            })
+    
+    def _rotate_user_agent(self):
+        """User-Agentをローテーション"""
+        self.current_user_agent = self.user_agent_manager.get_random_agent(self.device_type)
+        self._update_session_headers()
+        self.logger.debug(f"User-Agentを変更: {self.current_user_agent[:50]}...")
     
     def _build_url(self, target_url: str, params: Dict[str, Any]) -> str:
         """
@@ -139,54 +191,79 @@ class ScraperAPIClient:
         render_js: bool = True,
         country_code: str = "JP",
         device_type: str = "desktop",
-        premium: bool = False,
+        premium: bool = True,
         session_number: Optional[int] = None,
         keep_headers: bool = True,
         output_format: str = "text",
-        custom_params: Optional[Dict[str, Any]] = None
+        custom_params: Optional[Dict[str, Any]] = None,
+        rotate_user_agent: bool = True,
+        use_proxy_rotation: bool = True
     ) -> Dict[str, Any]:
         """
-        URLをスクレイピング
+        URLをスクレイピング（改良版）
         
         Args:
             url: スクレイピング対象URL
             render_js: JavaScript実行を有効にするか
             country_code: 国コード
             device_type: デバイスタイプ
-            premium: プレミアムプロキシを使用するか
+            premium: プレミアム機能を使用するか
             session_number: セッション番号
             keep_headers: ヘッダーを保持するか
             output_format: 出力形式
             custom_params: カスタムパラメータ
+            rotate_user_agent: User-Agentをローテーションするか
+            use_proxy_rotation: プロキシローテーションを使用するか
             
         Returns:
             スクレイピング結果
             
         Raises:
-            ValidationError: URLが無効
-            NetworkError: ネットワークエラー
             APIError: API関連エラー
+            NetworkError: ネットワークエラー
         """
-        # URLバリデーション
+        # URL検証
         if not validate_url(url):
-            raise ValidationError(f"無効なURL: {url}")
+            raise ValueError(f"無効なURL: {url}")
+        
+        # リクエスト制御
+        if self.request_throttle:
+            wait_time = self.request_throttle.wait_if_needed()
+            if wait_time > 0:
+                self.logger.info(f"リクエスト制御: {wait_time:.2f}秒待機しました")
+        
+        # User-Agentローテーション
+        if rotate_user_agent:
+            self._rotate_user_agent()
+        
+        # プロキシ選択
+        proxy = None
+        if use_proxy_rotation:
+            proxy = self.proxy_manager.get_proxy_for_country(country_code)
+            if not proxy:
+                proxy = self.proxy_manager.get_next_proxy()
         
         # パラメータ構築
         params = {
             'render': 'true' if render_js else 'false',
             'country_code': country_code,
             'device_type': device_type,
-            'output_format': output_format
+            'premium': 'true' if premium else 'false',
+            'keep_headers': 'true' if keep_headers else 'false',
+            'format': output_format,
+            'wait': 5000,  # JavaScript読み込み待機時間を増加
+            'timeout': self.timeout * 1000,  # ミリ秒に変換
         }
         
-        if premium:
-            params['premium'] = 'true'
+        # セッション番号設定
+        if session_number is None:
+            session_number = random.randint(1, 10000)
+        params['session_number'] = session_number
         
-        if session_number is not None:
-            params['session_number'] = session_number
-        
-        if keep_headers:
-            params['keep_headers'] = 'true'
+        # プロキシパラメータを追加
+        if proxy:
+            proxy_params = self.proxy_manager.get_scraperapi_params(proxy)
+            params.update(proxy_params)
         
         # カスタムパラメータを追加
         if custom_params:
@@ -196,123 +273,78 @@ class ScraperAPIClient:
         request_url = self._build_url(url, params)
         
         self.logger.info(f"スクレイピング開始: {url}")
-        self.logger.debug(f"パラメータ: {params}")
+        if proxy:
+            self.logger.debug(f"使用プロキシ: {proxy.country}")
         
         try:
-            # レート制限対応
-            time.sleep(self.rate_limit_delay)
-            
-            # リクエスト実行
+            # HTTPリクエスト実行
             response = self.session.get(
                 request_url,
-                timeout=self.timeout
+                timeout=self.timeout,
+                allow_redirects=True
             )
             
             # レスポンス処理
             result = self._handle_response(response)
             
+            # プロキシ成功を記録
+            if proxy:
+                self.proxy_manager.record_proxy_result(proxy, True)
+            
+            # 人間らしい読み取り時間をシミュレート
+            if self.request_throttle:
+                content_length = len(result.get('content', ''))
+                reading_time = self.request_throttle.simulate_reading_time(content_length)
+                if reading_time > 1.0:  # 1秒以上の場合のみ実行
+                    self.logger.debug(f"読み取り時間シミュレート: {reading_time:.2f}秒")
+                    time.sleep(reading_time)
+            
             self.logger.info(f"スクレイピング成功: {url}")
             return result
             
-        except requests.exceptions.Timeout:
-            error_msg = f"タイムアウト: {url}"
-            self.logger.error(error_msg)
-            raise NetworkError(error_msg)
-            
-        except requests.exceptions.ConnectionError as e:
-            error_msg = f"接続エラー: {url}"
-            self.logger.error(error_msg)
-            raise NetworkError(error_msg, original_exception=e)
+        except (RateLimitError, AuthenticationError) as e:
+            # プロキシ失敗を記録
+            if proxy:
+                self.proxy_manager.record_proxy_result(proxy, False)
+            raise e
             
         except requests.exceptions.RequestException as e:
-            error_msg = f"リクエストエラー: {url}"
-            self.logger.error(error_msg)
-            raise NetworkError(error_msg, original_exception=e)
-        
-        except RateLimitError as e:
-            self.logger.warning(f"レート制限: {url}, {e.retry_after}秒後にリトライ")
-            time.sleep(e.retry_after)
-            raise
-    
-    def scrape_tiktok_explore(
-        self,
-        country_code: str = "JP",
-        render_js: bool = True,
-        device_type: str = "desktop"
-    ) -> Dict[str, Any]:
-        """
-        TikTok /exploreページをスクレイピング
-        
-        Args:
-            country_code: 国コード
-            render_js: JavaScript実行を有効にするか
-            device_type: デバイスタイプ
+            # プロキシ失敗を記録
+            if proxy:
+                self.proxy_manager.record_proxy_result(proxy, False)
             
-        Returns:
-            スクレイピング結果
-        """
-        explore_url = "https://www.tiktok.com/explore"
+            self.logger.error(f"ネットワークエラー: {e}")
+            raise NetworkError(f"リクエストに失敗しました: {e}")
         
-        return self.scrape(
-            url=explore_url,
-            render_js=render_js,
-            country_code=country_code,
-            device_type=device_type,
-            premium=True,  # TikTokは高度な対策があるためプレミアム使用
-            output_format="text"
-        )
-    
-    def test_connection(self) -> bool:
-        """
-        接続テスト
-        
-        Returns:
-            接続成功かどうか
-        """
-        try:
-            # 簡単なテストページでテスト
-            test_url = "https://httpbin.org/html"
-            result = self.scrape(
-                url=test_url,
-                render_js=False,
-                country_code="US"
-            )
-            
-            success = result.get('success', False)
-            self.logger.info(f"接続テスト結果: {'成功' if success else '失敗'}")
-            return success
-            
         except Exception as e:
-            self.logger.error(f"接続テスト失敗: {e}")
-            return False
+            # プロキシ失敗を記録
+            if proxy:
+                self.proxy_manager.record_proxy_result(proxy, False)
+            
+            self.logger.error(f"予期しないエラー: {e}")
+            raise APIError(f"スクレイピングに失敗しました: {e}")
     
-    def get_account_info(self) -> Dict[str, Any]:
+    def get_stats(self) -> Dict[str, Any]:
         """
-        アカウント情報を取得
+        統計情報を取得
         
         Returns:
-            アカウント情報
+            統計情報
         """
-        try:
-            # ScraperAPIのアカウント情報エンドポイント
-            account_url = f"{self.base_url}/account"
-            params = {'api_key': self.api_key}
-            
-            response = self.session.get(
-                account_url,
-                params=params,
-                timeout=self.timeout
-            )
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                self.logger.warning(f"アカウント情報取得失敗: HTTP {response.status_code}")
-                return {}
-                
-        except Exception as e:
-            self.logger.error(f"アカウント情報取得エラー: {e}")
-            return {}
+        stats = {
+            "current_user_agent": self.current_user_agent,
+            "device_type": self.device_type,
+        }
+        
+        # プロキシ統計
+        if self.proxy_manager:
+            stats["proxy_stats"] = self.proxy_manager.get_proxy_stats()
+        
+        # リクエスト制御統計
+        if self.request_throttle:
+            stats["throttle_stats"] = self.request_throttle.get_stats()
+        
+        return stats
     
     def close(self):
         """セッションを閉じる"""

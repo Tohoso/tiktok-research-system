@@ -154,3 +154,23 @@ Thumbs.db
 temp/
 tmp/
 
+
+# TikTok Research System specific
+debug/
+*.html
+explore_video_urls.txt
+practical_test_*
+final_test_*
+realtime_*
+*_20*.json
+*_20*.csv
+*_20*.md
+screenshots/
+meta_tag_video_details_*.json
+simple_extracted_info.json
+simple_js_content.html
+integration_test_results_*.json
+final_system_test_report_*.json
+explore_batch_results_*.json
+explore_videos_*.csv
+

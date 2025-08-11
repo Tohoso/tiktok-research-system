@@ -6,7 +6,7 @@ import argparse
 import sys
 import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from .utils.config import config
